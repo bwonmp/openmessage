@@ -2332,10 +2332,18 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		// the REMOTE Google read cursor — clearing the badge on the phone, not
 		// just in this sidebar. Before this, it only zeroed the local flag.
 		//
+		// getClient(), NOT the bare cli parameter. Every caller of
+		// APIHandlerWithOptions passes nil for cli (cmd/serve.go, e2e-server,
+		// and every test) and supplies the live client through opts.Client
+		// instead; serve.go sets it to a.GetClient. Using cli here silently
+		// meant "no client", so the remote cursor was skipped on every single
+		// request while the endpoint still returned ok — the local flag
+		// cleared and the phone stayed unread.
+		//
 		// A remote failure is deliberately not fatal: the local clear has
 		// already happened, and failing the request would make clearing a
 		// badge start returning 500s whenever Google is disconnected.
-		markResult, err := app.SyncConversationReadWith(store, app.RemoteReadCursor(cli), req.ConversationID, req.MessageID)
+		markResult, err := app.SyncConversationReadWith(store, app.RemoteReadCursor(getClient()), req.ConversationID, req.MessageID)
 		if err != nil {
 			httpError(w, "mark read: "+err.Error(), 500)
 			return
@@ -2346,10 +2354,15 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 				Str("conv_id", req.ConversationID).
 				Msg("Marked read locally but could not advance the remote read cursor")
 		} else if markResult.RemoteSkipped != "" {
-			logger.Debug().
+			// Warn, not Debug. A mark-read that never reached the phone looks
+			// exactly like a successful one from the caller's side, so if this
+			// is quiet at the default level the failure is invisible: the only
+			// symptom is a badge that stays unread on the device. Debug here
+			// is what hid the nil-client bug above.
+			logger.Warn().
 				Str("conv_id", req.ConversationID).
 				Str("reason", markResult.RemoteSkipped).
-				Msg("Marked read locally only")
+				Msg("Marked read locally only; the phone was NOT updated")
 		}
 		if opts.V2 != nil {
 			nowMS := time.Now().UnixMilli()
