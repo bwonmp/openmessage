@@ -2318,6 +2318,7 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		}
 		var req struct {
 			ConversationID string `json:"conversation_id"`
+			MessageID      string `json:"message_id,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpError(w, "invalid JSON: "+err.Error(), 400)
@@ -2327,9 +2328,28 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			httpError(w, "conversation_id is required", 400)
 			return
 		}
-		if err := store.MarkConversationRead(req.ConversationID); err != nil {
+		// Routed through the shared helper so the UI's mark-read also advances
+		// the REMOTE Google read cursor — clearing the badge on the phone, not
+		// just in this sidebar. Before this, it only zeroed the local flag.
+		//
+		// A remote failure is deliberately not fatal: the local clear has
+		// already happened, and failing the request would make clearing a
+		// badge start returning 500s whenever Google is disconnected.
+		markResult, err := app.SyncConversationReadWith(store, app.RemoteReadCursor(cli), req.ConversationID, req.MessageID)
+		if err != nil {
 			httpError(w, "mark read: "+err.Error(), 500)
 			return
+		}
+		if markResult.RemoteErr != nil {
+			logger.Warn().
+				Err(markResult.RemoteErr).
+				Str("conv_id", req.ConversationID).
+				Msg("Marked read locally but could not advance the remote read cursor")
+		} else if markResult.RemoteSkipped != "" {
+			logger.Debug().
+				Str("conv_id", req.ConversationID).
+				Str("reason", markResult.RemoteSkipped).
+				Msg("Marked read locally only")
 		}
 		if opts.V2 != nil {
 			nowMS := time.Now().UnixMilli()
