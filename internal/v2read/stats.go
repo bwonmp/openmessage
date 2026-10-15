@@ -168,17 +168,15 @@ func (s *Source) LatestConversationPreviews(ids []string) (map[string]string, er
 		unique = append(unique, id)
 	}
 	previews := make(map[string]string, len(unique))
+	latestMessages, err := s.messages.GetLatestMessageByConversations(context.Background(), unique)
+	if err != nil {
+		return nil, err
+	}
 	for _, conversationID := range unique {
-		messages, err := s.messages.ListMessagesByConversation(
-			context.Background(), conversationID, 0, "", 1,
-		)
-		if err != nil {
-			return nil, err
-		}
-		if len(messages) == 0 {
+		message, ok := latestMessages[conversationID]
+		if !ok {
 			continue
 		}
-		message := messages[0]
 		attachment, hasAttachment, err := s.messageAttachment(
 			context.Background(), message.MessageID,
 		)
