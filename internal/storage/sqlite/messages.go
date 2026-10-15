@@ -389,6 +389,46 @@ func (r *MessageRepository) ListMessagesByConversationAfter(
 	return messages, nil
 }
 
+// GetLatestMessageByConversations returns the most recent message for each of the given conversation IDs.
+func (r *MessageRepository) GetLatestMessageByConversations(
+	ctx context.Context,
+	conversationIDs []string,
+) (map[string]Message, error) {
+	result := make(map[string]Message, len(conversationIDs))
+	if len(conversationIDs) == 0 {
+		return result, nil
+	}
+
+	// Execute N+1 inside sqlite as a prepared statement to match legacy behavior
+	// and avoid an unbounded IN clause or complex window functions.
+	query := `
+		SELECT ` + messageColumns + `
+		FROM messages
+		WHERE conversation_id = ?
+		ORDER BY occurred_at_ms DESC, message_id DESC
+		LIMIT 1
+	`
+	stmt, err := r.store.db.PrepareContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("prepare latest messages query: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, conversationID := range conversationIDs {
+		row := stmt.QueryRowContext(ctx, conversationID)
+		message, err := scanMessage(row)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return nil, fmt.Errorf("scan latest message for conversation %q: %w", conversationID, err)
+		}
+		result[conversationID] = message
+	}
+
+	return result, nil
+}
+
 // ListMessagesAroundMessage returns the anchor and its neighboring messages in
 // chronological order. Missing anchors and cross-conversation anchors wrap
 // ErrNotFound.
