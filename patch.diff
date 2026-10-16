@@ -1,0 +1,32 @@
+--- internal/app/contacts_test.go
++++ internal/app/contacts_test.go
+@@ -95,7 +95,6 @@
+		syncEnv    string
+		appClosed  bool
+		clientMock *mockGMClient
+-		wantCount  int
+	}{
+		{
+			name:   "app is nil",
+@@ -107,7 +106,6 @@
+			clientMock: &mockGMClient{
+				contacts: []*gmproto.Contact{{Name: "Alice"}},
+			},
+-			wantCount: 0,
+		},
+		{
+			name:      "app sync closed",
+@@ -115,13 +113,11 @@
+			clientMock: &mockGMClient{
+				contacts: []*gmproto.Contact{{Name: "Alice"}},
+			},
+-			wantCount: 0,
+		},
+		{
+			name: "success with contacts",
+			clientMock: &mockGMClient{
+				contacts: []*gmproto.Contact{{Name: "Alice", ContactID: "c1"}},
+			},
+-			wantCount: 1, // Note: the method StartGoogleContactSync handles sync in a goroutine
+		},
+	}

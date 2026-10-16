@@ -1,0 +1,176 @@
+package app
+
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
+)
+
+
+func TestSyncGoogleContacts(t *testing.T) {
+	tests := []struct {
+		name       string
+		clientMock *mockGMClient
+		wantCount  int
+		wantErr    string
+	}{
+		{
+			name:       "nil client",
+			clientMock: nil,
+			wantErr:    "not connected to Google Messages",
+		},
+		{
+			name: "list contacts error",
+			clientMock: &mockGMClient{
+				listContactsErr: errors.New("API error"),
+			},
+			wantErr: "list contacts: API error",
+		},
+		{
+			name: "success with valid and invalid contacts",
+			clientMock: &mockGMClient{
+				contacts: []*gmproto.Contact{
+					{
+						ParticipantID: "p1",
+						ContactID:     "c1",
+						Name:          "Alice",
+						Number:        &gmproto.ContactNumber{Number: "12345"},
+					},
+					{
+						ParticipantID: "p2",
+						ContactID:     "c2",
+						Name:          "Bob",
+						// missing number
+					},
+					{
+						ParticipantID: "p3",
+						// missing contact ID
+						Name:   "Charlie",
+						Number: &gmproto.ContactNumber{Number: "67890"},
+					},
+					{
+						ParticipantID: "p4",
+						// empty name and number, should be skipped
+					},
+				},
+			},
+			wantCount: 3, // Alice, Bob, Charlie are valid. p4 is skipped.
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newTestApp(t, tt.clientMock)
+			if tt.clientMock == nil {
+				a.gmClient = nil // explicitly set to nil for the "nil client" test
+			}
+
+			count, err := a.SyncGoogleContacts()
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error = %v, wantErr = %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if count != tt.wantCount {
+				t.Errorf("count = %d, want %d", count, tt.wantCount)
+			}
+		})
+	}
+}
+
+func TestStartGoogleContactSync(t *testing.T) {
+	tests := []struct {
+		name       string
+		appNil     bool
+		syncEnv    string
+		appClosed  bool
+		clientMock *mockGMClient
+		wantCount  int
+	}{
+		{
+			name:   "app is nil",
+			appNil: true,
+		},
+		{
+			name:    "sync disabled via env",
+			syncEnv: "0",
+			clientMock: &mockGMClient{
+				contacts: []*gmproto.Contact{{Name: "Alice"}},
+			},
+			wantCount: 0,
+		},
+		{
+			name:      "app sync closed",
+			appClosed: true,
+			clientMock: &mockGMClient{
+				contacts: []*gmproto.Contact{{Name: "Alice"}},
+			},
+			wantCount: 0,
+		},
+		{
+			name: "success with contacts",
+			clientMock: &mockGMClient{
+				contacts: []*gmproto.Contact{{Name: "Alice", ContactID: "c1"}},
+			},
+			wantCount: 1, // Note: the method StartGoogleContactSync handles sync in a goroutine
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.syncEnv != "" {
+				t.Setenv("OPENMESSAGE_GOOGLE_AVATAR_SYNC", tt.syncEnv)
+			} else {
+				// Enable by default for tests that need it unless specifically disabled
+				t.Setenv("OPENMESSAGE_GOOGLE_AVATAR_SYNC", "1")
+			}
+
+			var a *App
+			if !tt.appNil {
+				a = newTestApp(t, tt.clientMock)
+				if tt.appClosed {
+					a.StopGoogleAvatarSync()
+				}
+			}
+
+			if a == nil {
+				a.StartGoogleContactSync() // should not panic
+			} else {
+				a.StartGoogleContactSync()
+
+				// Ensure that the background sync goroutine finishes before moving on to prevent leaking
+				// SyncGoogleContacts returns when ListContacts completes, which will do QueueGoogleAvatarCandidates
+				// and QueueGoogleAvatarCandidates calls avatarSyncOnce.Do() which starts googleAvatarSyncLoop
+				// and it's also waited on by avatarSyncWG.Wait()
+				if !tt.appClosed && tt.syncEnv != "0" {
+					// We need to signal the avatar sync loop to stop, since it loops indefinitely on `stop` chan
+					a.StopGoogleAvatarSync()
+				}
+
+				// Wait for goroutine to complete with a timeout to avoid hangs
+				done := make(chan struct{})
+				go func() {
+					a.avatarSyncWG.Wait()
+					close(done)
+				}()
+
+				select {
+				case <-done:
+					// Success
+				case <-time.After(2 * time.Second):
+					t.Fatalf("timeout waiting for avatarSyncWG.Wait()")
+				}
+			}
+		})
+	}
+}
