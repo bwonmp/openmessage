@@ -1,7 +1,6 @@
 package notify
 
 import (
-	"fmt"
 	"net/url"
 	"os/exec"
 	"regexp"
@@ -122,7 +121,12 @@ func (n *MacOSNotifier) notify(title, body, messageID, conversationID string) er
 		}
 		return n.run(n.terminalNotifierPath, args...)
 	}
-	return n.run("osascript", "-e", appleScriptNotification(title, body))
+	return n.run("osascript",
+		"-e", "on run argv",
+		"-e", "display notification (item 1 of argv) with title (item 2 of argv)",
+		"-e", "end run",
+		"--", body, title,
+	)
 }
 
 func (n *MacOSNotifier) openURL(conversationID string) string {
@@ -151,19 +155,6 @@ func (n *MacOSNotifier) remember(messageID string) bool {
 		delete(n.seen, evicted)
 	}
 	return true
-}
-
-func appleScriptNotification(title, body string) string {
-	return fmt.Sprintf(
-		"display notification %s with title %s",
-		appleScriptString(body),
-		appleScriptString(title),
-	)
-}
-
-func appleScriptString(value string) string {
-	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
-	return `"` + replacer.Replace(value) + `"`
 }
 
 func mentionNamesForIdentity(identity string) []string {
