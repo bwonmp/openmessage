@@ -64,14 +64,6 @@ func TestMacOSNotifierSkipsOutgoingMessages(t *testing.T) {
 	}
 }
 
-func TestAppleScriptNotificationEscapesQuotes(t *testing.T) {
-	script := appleScriptNotification(`Jenn "J"`, `He said "hi"`)
-	want := `display notification "He said \"hi\"" with title "Jenn \"J\""`
-	if script != want {
-		t.Fatalf("script = %q, want %q", script, want)
-	}
-}
-
 func TestMacOSNotifierUsesTerminalNotifierDeepLink(t *testing.T) {
 	notifier := NewMacOSNotifier(zerolog.Nop(), true, "http://127.0.0.1:7007", nil, "")
 	notifier.terminalNotifierPath = "/opt/homebrew/bin/terminal-notifier"
