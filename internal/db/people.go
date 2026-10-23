@@ -21,8 +21,19 @@ type Person struct {
 // realMessageCountsByConversation counts real (non-system, content-bearing)
 // messages per conversation in a single query, mirroring story.FilterRealMessages
 // closely enough for list ordering.
-func (s *Store) realMessageCountsByConversation() (map[string]int, error) {
-	rows, err := s.db.Query(`
+func (s *Store) realMessageCountsByConversation(conversationIDs []string) (map[string]int, error) {
+	if len(conversationIDs) == 0 {
+		return map[string]int{}, nil
+	}
+
+	placeholders := make([]string, len(conversationIDs))
+	args := make([]any, len(conversationIDs))
+	for i, id := range conversationIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := `
 		SELECT conversation_id, COUNT(*) FROM messages
 		WHERE (TRIM(body) != '' OR TRIM(COALESCE(media_id,'')) != '')
 		  AND lower(body) NOT LIKE 'rcs chat with%'
@@ -31,8 +42,10 @@ func (s *Store) realMessageCountsByConversation() (map[string]int, error) {
 		  AND lower(body) NOT LIKE 'you started an rcs%'
 		  AND lower(body) NOT LIKE 'this chat is now%'
 		  AND lower(body) NOT LIKE 'sms/mms with%'
+		  AND conversation_id IN (` + strings.Join(placeholders, ",") + `)
 		GROUP BY conversation_id
-	`)
+	`
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -91,10 +104,13 @@ func (s *Store) ListMessagedPeople() ([]*Person, error) {
 		p.ConversationIDs = append(p.ConversationIDs, c.ConversationID)
 	}
 	people := make([]*Person, 0, len(order))
+	var allConversationIDs []string
 	for _, k := range order {
-		people = append(people, byKey[k])
+		p := byKey[k]
+		people = append(people, p)
+		allConversationIDs = append(allConversationIDs, p.ConversationIDs...)
 	}
-	if counts, err := s.realMessageCountsByConversation(); err == nil {
+	if counts, err := s.realMessageCountsByConversation(allConversationIDs); err == nil {
 		for _, p := range people {
 			total := 0
 			for _, cid := range p.ConversationIDs {

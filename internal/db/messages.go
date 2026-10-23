@@ -708,29 +708,38 @@ func (s *Store) LatestConversationPreviews(conversationIDs []string) (map[string
 		return previews, nil
 	}
 
-	stmt, err := s.db.Prepare(`
-		SELECT body, media_id, mime_type, is_from_me
-		FROM messages
-		WHERE conversation_id = ?
-		ORDER BY timestamp_ms DESC, message_id DESC
-		LIMIT 1
-	`)
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := `
+		SELECT conversation_id, body, media_id, mime_type, is_from_me
+		FROM (
+			SELECT conversation_id, body, media_id, mime_type, is_from_me,
+				   ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY timestamp_ms DESC, message_id DESC) as rn
+			FROM messages
+			WHERE conversation_id IN (` + strings.Join(placeholders, ",") + `)
+		) WHERE rn = 1
+	`
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer stmt.Close()
+	defer rows.Close()
 
-	for _, conversationID := range ids {
-		var body, mediaID, mimeType string
+	for rows.Next() {
+		var conversationID, body, mediaID, mimeType string
 		var isFromMe bool
-		err := stmt.QueryRow(conversationID).Scan(&body, &mediaID, &mimeType, &isFromMe)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
+		if err := rows.Scan(&conversationID, &body, &mediaID, &mimeType, &isFromMe); err != nil {
 			return nil, err
 		}
 		previews[conversationID] = formatLastMessagePreview(body, mediaID, mimeType, isFromMe)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return previews, nil
 }
