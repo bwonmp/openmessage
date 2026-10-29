@@ -111,16 +111,75 @@ func (s *Store) ListMessagedPeople() ([]*Person, error) {
 
 // PersonByKey resolves a normalized person key back to the aggregated person.
 func (s *Store) PersonByKey(key string) (*Person, error) {
-	people, err := s.ListMessagedPeople()
+	if key == "" {
+		return nil, nil
+	}
+	convs, err := s.ListConversations(5000)
 	if err != nil {
 		return nil, err
 	}
-	for _, p := range people {
-		if p.Key == key {
-			return p, nil
+
+	var p *Person
+	for _, c := range convs {
+		if c.IsGroup {
+			continue
+		}
+		name := strings.TrimSpace(c.Name)
+		var nums []string
+		if name == "" {
+			nums = participantNumbers(c.Participants)
+			if len(nums) > 0 {
+				name = nums[0]
+			} else {
+				continue
+			}
+			if PersonKey(name) != key {
+				continue
+			}
+		} else {
+			if PersonKey(name) != key {
+				continue
+			}
+			nums = participantNumbers(c.Participants)
+		}
+
+		if p == nil {
+			p = &Person{Key: key, Name: name}
+		}
+		for _, n := range nums {
+			p.Numbers = appendUniqueStr(p.Numbers, n)
+		}
+		p.Platforms = appendUniqueStr(p.Platforms, platformOrSMS(c.SourcePlatform))
+		if c.LastMessageTS > p.LastContactedTS {
+			p.LastContactedTS = c.LastMessageTS
+		}
+		p.ConversationIDs = append(p.ConversationIDs, c.ConversationID)
+	}
+
+	if p != nil && len(p.ConversationIDs) > 0 {
+		placeholders := make([]string, len(p.ConversationIDs))
+		args := make([]any, len(p.ConversationIDs))
+		for i, cid := range p.ConversationIDs {
+			placeholders[i] = "?"
+			args[i] = cid
+		}
+		q := `
+			SELECT COUNT(*) FROM messages
+			WHERE conversation_id IN (` + strings.Join(placeholders, ",") + `)
+			  AND (TRIM(body) != '' OR TRIM(COALESCE(media_id,'')) != '')
+			  AND lower(body) NOT LIKE 'rcs chat with%'
+			  AND lower(body) NOT LIKE 'this rcs chat is now%'
+			  AND lower(body) NOT LIKE 'you created this rcs%'
+			  AND lower(body) NOT LIKE 'you started an rcs%'
+			  AND lower(body) NOT LIKE 'this chat is now%'
+			  AND lower(body) NOT LIKE 'sms/mms with%'
+		`
+		var n int
+		if err := s.db.QueryRow(q, args...).Scan(&n); err == nil {
+			p.MessageCount = n
 		}
 	}
-	return nil, nil
+	return p, nil
 }
 
 // PersonMessages returns the deduplicated messages across a person's
