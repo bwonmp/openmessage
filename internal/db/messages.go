@@ -708,30 +708,47 @@ func (s *Store) LatestConversationPreviews(conversationIDs []string) (map[string
 		return previews, nil
 	}
 
-	stmt, err := s.db.Prepare(`
-		SELECT body, media_id, mime_type, is_from_me
-		FROM messages
-		WHERE conversation_id = ?
-		ORDER BY timestamp_ms DESC, message_id DESC
-		LIMIT 1
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
-
-	for _, conversationID := range ids {
-		var body, mediaID, mimeType string
-		var isFromMe bool
-		err := stmt.QueryRow(conversationID).Scan(&body, &mediaID, &mimeType, &isFromMe)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
+	const chunkSize = 100
+	for i := 0; i < len(ids); i += chunkSize {
+		end := i + chunkSize
+		if end > len(ids) {
+			end = len(ids)
 		}
+		chunk := ids[i:end]
+
+		placeholders := make([]string, len(chunk))
+		args := make([]any, len(chunk))
+		for j, id := range chunk {
+			placeholders[j] = "?"
+			args[j] = id
+		}
+
+		query := `
+			SELECT conversation_id, body, media_id, mime_type, is_from_me FROM (
+				SELECT conversation_id, body, media_id, mime_type, is_from_me,
+					ROW_NUMBER() OVER(PARTITION BY conversation_id ORDER BY timestamp_ms DESC, message_id DESC) as rn
+				FROM messages
+				WHERE conversation_id IN (` + strings.Join(placeholders, ",") + `)
+			) WHERE rn = 1
+		`
+
+		rows, err := s.db.Query(query, args...)
 		if err != nil {
 			return nil, err
 		}
-		previews[conversationID] = formatLastMessagePreview(body, mediaID, mimeType, isFromMe)
+
+		for rows.Next() {
+			var convID, body, mediaID, mimeType string
+			var isFromMe bool
+			if err := rows.Scan(&convID, &body, &mediaID, &mimeType, &isFromMe); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			previews[convID] = formatLastMessagePreview(body, mediaID, mimeType, isFromMe)
+		}
+		rows.Close()
 	}
+
 	return previews, nil
 }
 
