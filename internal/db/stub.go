@@ -80,7 +80,12 @@ func (s *Store) RepairEmptyStubMessages() (int, error) {
 	}
 	defer tx.Rollback()
 
-	res, err := s.deleteMessages(tx, emptyStubSQLPredicate)
+	if s.ftsEnabled {
+		if _, err := tx.Exec(`DELETE FROM messages_fts WHERE message_id IN (SELECT message_id FROM messages WHERE ` + emptyStubSQLPredicate + `)`); err != nil {
+			return 0, err
+		}
+	}
+	res, err := tx.Exec(`DELETE FROM messages WHERE ` + emptyStubSQLPredicate)
 	if err != nil {
 		return 0, err
 	}

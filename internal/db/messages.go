@@ -622,7 +622,12 @@ func (s *Store) DeleteTmpMessages(conversationID string) (int64, error) {
 	}
 	defer tx.Rollback()
 
-	result, err := s.deleteMessages(tx, `conversation_id = ? AND message_id LIKE 'tmp_%'`, conversationID)
+	if s.ftsEnabled {
+		if _, err := tx.Exec(`DELETE FROM messages_fts WHERE message_id IN (SELECT message_id FROM messages WHERE conversation_id = ? AND message_id LIKE 'tmp_%')`, conversationID); err != nil {
+			return 0, err
+		}
+	}
+	result, err := tx.Exec(`DELETE FROM messages WHERE conversation_id = ? AND message_id LIKE 'tmp_%'`, conversationID)
 	if err != nil {
 		return 0, err
 	}
@@ -639,7 +644,12 @@ func (s *Store) DeleteMessageByID(messageID string) error {
 	}
 	defer tx.Rollback()
 
-	if _, err := s.deleteMessages(tx, `message_id = ?`, messageID); err != nil {
+	if s.ftsEnabled {
+		if _, err := tx.Exec(`DELETE FROM messages_fts WHERE message_id = ?`, messageID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM messages WHERE message_id = ?`, messageID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -911,13 +921,4 @@ func (s *Store) syncMessageSearchIndex(exec interface {
 	}
 	_, err := exec.Exec(`INSERT INTO messages_fts(message_id, body) VALUES (?, ?)`, messageID, body)
 	return err
-}
-
-func (s *Store) deleteMessages(tx *sql.Tx, where string, args ...any) (sql.Result, error) {
-	if s.ftsEnabled {
-		if _, err := tx.Exec(`DELETE FROM messages_fts WHERE message_id IN (SELECT message_id FROM messages WHERE `+where+`)`, args...); err != nil {
-			return nil, err
-		}
-	}
-	return tx.Exec(`DELETE FROM messages WHERE `+where, args...)
 }
